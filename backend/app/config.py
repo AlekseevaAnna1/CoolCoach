@@ -8,7 +8,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "mysql+pymysql://user:password@localhost:3306/coolcoach"
+    database_url: str = "mysql+aiomysql://user:password@localhost:3306/coolcoach"
     secret_key: str = "change-me"
 
 
