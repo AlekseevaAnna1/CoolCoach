@@ -1,0 +1,1 @@
+# CoolCoach backend application package.
