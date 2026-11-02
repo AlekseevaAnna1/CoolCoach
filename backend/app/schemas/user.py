@@ -3,18 +3,21 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
-class UserCreate(BaseModel): // описывает JSON, который клиент отправляет серверу при регистрации
+# Описывает JSON, который клиент отправляет серверу при регистрации.
+class UserCreate(BaseModel):
     email: EmailStr = Field(max_length=100)
     password: str = Field(min_length=8, max_length=128)
     name: str | None = Field(default=None, max_length=45)
 
 
-class UserLogin(BaseModel): // описывает JSON, который клиент отправляет серверу при входе в систему
+# Описывает JSON, который клиент отправляет серверу при входе в систему.
+class UserLogin(BaseModel):
     email: EmailStr = Field(max_length=100)
     password: str
 
 
-class UserRead(BaseModel): // описывает JSON, который сервер отдаёт клиенту после регистрации
+# Описывает JSON, который сервер отдаёт клиенту после регистрации.
+class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
@@ -23,6 +26,7 @@ class UserRead(BaseModel): // описывает JSON, который серве
     created_at: datetime
 
 
-class Token(BaseModel): // описывает JSON, который сервер отдаёт клиенту после входа в систему
+# Описывает JSON, который сервер отдаёт клиенту после входа в систему.
+class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
