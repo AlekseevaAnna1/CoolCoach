@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from jose import jwt
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from app.config import settings
@@ -22,3 +22,15 @@ def create_access_token(subject: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes) # Устанавливаем время истечения токена.
     payload = {"sub": subject, "exp": expire} # Создаём payload для токена.
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm) # Кодируем payload в токен и возвращаем его.
+
+
+# Читает user_id из токена доступа. При неверном токене возвращает None.
+def read_access_token_subject(token: str) -> str | None:
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    except JWTError:
+        return None
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        return None
+    return subject
