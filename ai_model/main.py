@@ -75,22 +75,38 @@ with PoseLandmarker.create_from_options(options) as landmarker:
             # Обработка упражнения
             angle = exercise.process(landmarks)
 
-            # Вывод текста ошибки
-            if exercise.current_error_text:
-                # Отправляем в LLM только если ошибка изменилась
-                if exercise.current_error_text != last_error_for_llm:
-                    last_error_for_llm = exercise.current_error_text
-                    feedback = get_feedback(ex_name, last_error_for_llm)
+            # Рисуем скелет
+            for lm in landmarks:
+                x, y = int(lm.x * frame.shape[1]), int(lm.y * frame.shape[0])
+                cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
+            
+            connections = mp.tasks.vision.PoseLandmarksConnections.POSE_LANDMARKS
+            for connection in connections:
+                start_point = (int(landmarks[connection.start].x * frame.shape[1]), int(landmarks[connection.start].y * frame.shape[0]))
+                end_point = (int(landmarks[connection.end].x * frame.shape[1]), int(landmarks[connection.end].y * frame.shape[0]))
+                cv2.line(frame, start_point, end_point, (255, 0, 255), 2)
+
+            # === ОБРАБОТКА ОШИБОК И ГОЛОС ===
+            if exercise.current_errors:
+                # 1. Выводим на экран все ошибки
+                y_offset = 30
+                for err in exercise.current_errors:
+                    cv2.putText(frame, err, (10, frame.shape[0] - y_offset), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    y_offset += 30
+                
+                # 2. Озвучиваем
+                current_time = time.time()
+                # Если прошло больше 2 секунд с последней озвучки
+                if current_time - last_speak_time > 2.0:
+                    # Берем первую ошибку из списка для озвучки
+                    error_to_speak = exercise.current_errors[0]
                     
-                    # Озвучиваем (не чаще раза в 3 секунды)
-                    current_time = time.time()
-                    if current_time - last_speak_time > 3:
-                        speak(feedback)
-                        last_speak_time = current_time
+                    # Если ошибка изменилась, или просто прошло время — генерируем текст
+                    feedback = get_feedback(ex_name, error_to_speak)
+                    speak(feedback)
                     
-                # Показываем текст на экране (даже если LLM не ответил)
-                cv2.putText(frame, exercise.current_error_text, (10, frame.shape[0] - 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    last_speak_time = current_time
 
             # === РИСУЕМ СКЕЛЕТ ===
             # 1. Точки

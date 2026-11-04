@@ -1,19 +1,21 @@
 from utils import calculate_angle
+import time
 
 class BaseExercise:
     def __init__(self):
         self.counter = 0
         self.stage = "up"
         self.errors = 0
-        self.current_error_text = ""
-        self.error_counted = False # <--- НОВЫЙ ФЛАГ
+        self.current_errors = [] # <--- Теперь это СПИСОК ошибок
+        self.spoken_errors = []  # Запоминаем, что уже озвучили
         
     def reset(self):
         self.counter = 0
         self.stage = "up"
         self.errors = 0
-        self.current_error_text = ""
-        self.error_counted = False
+        self.current_errors = []
+        self.spoken_errors = []
+
 
 class Squat(BaseExercise):
     def __init__(self):
@@ -22,16 +24,15 @@ class Squat(BaseExercise):
         self.is_calibrated = False
         self.calibration_frames = 0
         self.start_hip_y = 0
-        self.min_hip_y = 0  # Запоминаем самую низкую точку таза
+        self.min_hip_y = 0
+        
+        # Переменные для отслеживания времени
+        self.wrong_depth_start_time = None 
+        self.low_angle_reached = False # Флаг: дошел ли он до нужной глубины
 
     def process(self, landmarks):
-        r_hip = [landmarks[24].x, landmarks[24].y]
-        r_knee = [landmarks[26].x, landmarks[26].y]
-        r_ankle = [landmarks[28].x, landmarks[28].y]
-        
-        l_hip = [landmarks[23].x, landmarks[23].y]
-        l_knee = [landmarks[25].x, landmarks[25].y]
-        l_ankle = [landmarks[27].x, landmarks[27].y]
+        r_hip, r_knee, r_ankle = [landmarks[24].x, landmarks[24].y], [landmarks[26].x, landmarks[26].y], [landmarks[28].x, landmarks[28].y]
+        l_hip, l_knee, l_ankle = [landmarks[23].x, landmarks[23].y], [landmarks[25].x, landmarks[25].y], [landmarks[27].x, landmarks[27].y]
 
         angle_r = calculate_angle(r_hip, r_knee, r_ankle)
         angle_l = calculate_angle(l_hip, l_knee, l_ankle)
@@ -39,12 +40,12 @@ class Squat(BaseExercise):
         
         avg_hip_y = (r_hip[1] + l_hip[1]) / 2
         
-        self.current_error_text = ""
+        self.current_errors = []
 
         if not self.is_calibrated:
             if self.calibration_frames < 30:
                 self.calibration_frames += 1
-                self.current_error_text = "КАЛИБРОВКА... Встаньте ровно!"
+                self.current_errors.append("КАЛИБРОВКА... Встаньте ровно!")
             else:
                 self.standing_angle = avg_angle
                 self.start_hip_y = avg_hip_y
@@ -52,27 +53,42 @@ class Squat(BaseExercise):
                 self.is_calibrated = True
             return avg_angle
 
+        current_time = time.time()
+
         # --- ЛОГИКА ---
-        # Если таз опустился ниже, чем был в начале, запоминаем эту точку
         if avg_hip_y > self.min_hip_y:
             self.min_hip_y = avg_hip_y
 
-        # Присед: угол маленький, и таз действительно опустился
-        if avg_angle < 110 and self.min_hip_y > (self.start_hip_y + 0.03):
-            self.stage = "down"
-            
-        # Встали: угол прямой, и мы до этого были внизу
-        if avg_angle > 160 and self.stage == "down":
+        # Если мы начали опускаться (угол стал меньше 150)
+        if avg_angle < 150 and self.stage == "up":
+            self.stage = "going_down"
+            self.wrong_depth_start_time = None # Сбрасываем таймер
+            self.low_angle_reached = False
+
+        # Если мы достигли нужной глубины
+        if avg_angle < 100:
+            self.low_angle_reached = True
+
+        # Если мы вернулись наверх
+        if avg_angle > 160 and self.stage in ["down", "going_down"]:
             self.stage = "up"
             self.counter += 1
-            self.error_counted = False
-            self.min_hip_y = avg_hip_y # Сбрасываем нижнюю точку для нового подхода
+            
+            # Ошибка: вернулся наверх, но не сел глубоко
+            if not self.low_angle_reached:
+                self.current_errors.append("Сядьте глубже")
+            
+            self.min_hip_y = avg_hip_y
 
-        # Ошибка (недосел)
-        if 110 < avg_angle < 140 and self.stage == "up" and not self.error_counted:
-            self.current_error_text = "Сядьте глубже"
-            self.errors += 1
-            self.error_counted = True
+        # --- ПРОВЕРКА "ЗАВИСАНИЯ" В НЕПРАВИЛЬНОЙ ПОЗЕ ---
+        # Если мы находимся в нижней точке, но угол больше 100 (недосел)
+        if 100 < avg_angle < 140 and self.stage in ["going_down", "down"]:
+            if self.wrong_depth_start_time is None:
+                self.wrong_depth_start_time = current_time
+            elif current_time - self.wrong_depth_start_time > 1.5: # Ждем 1.5 секунды
+                self.current_errors.append("Сядьте глубже")
+        else:
+            self.wrong_depth_start_time = None
 
         return avg_angle
 
