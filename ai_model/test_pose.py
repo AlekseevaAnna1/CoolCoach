@@ -3,6 +3,7 @@ import mediapipe as mp
 import urllib.request
 import os
 import time
+import numpy as np
 from utils import calculate_angle
 
 pose_model_path = 'pose_landmarker_lite.task'
@@ -12,6 +13,7 @@ if not os.path.exists(pose_model_path):
     urllib.request.urlretrieve("https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", pose_model_path)
 if not os.path.exists(hand_model_path):
     urllib.request.urlretrieve("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", hand_model_path)
+
 
 BaseOptions = mp.tasks.BaseOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
@@ -24,14 +26,14 @@ HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 hand_options = HandLandmarkerOptions(base_options=BaseOptions(model_asset_path=hand_model_path), running_mode=VisionRunningMode.VIDEO, num_hands=2)
 
-
-current_exercise = "SQUATS" # По умолчанию приседания
-
+current_exercise = "SQUATS"
 squat_counter = 0
 squat_stage = "up"
+standing_angle = 170  
+is_calibrated = False
+calibration_frames = 0
 
-pushup_counter = 0
-pushup_stage = "up"
+SQUAT_DOWN_THRESHOLD = 100
 
 cap = cv2.VideoCapture(0)
 
@@ -50,6 +52,9 @@ with PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
 
         pose_result = pose_landmarker.detect_for_video(mp_image, frame_timestamp_ms)
         
+        # Список для хранения текущих ошибок
+        errors = []
+
         if pose_result.pose_landmarks:
             landmarks = pose_result.pose_landmarks[0]
             
@@ -59,16 +64,7 @@ with PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
                 px_y = int(point[1] * frame.shape[0])
                 cv2.putText(frame, text, (px_x + 10, px_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-            # Углы рук
-            r_sh, r_el, r_wr = get_px(landmarks[12]), get_px(landmarks[14]), get_px(landmarks[16])
-            angle_r_arm = calculate_angle(r_sh, r_el, r_wr)
-            draw_text(str(int(angle_r_arm)), r_el, (255, 255, 0))
-
-            l_sh, l_el, l_wr = get_px(landmarks[11]), get_px(landmarks[13]), get_px(landmarks[15])
-            angle_l_arm = calculate_angle(l_sh, l_el, l_wr)
-            draw_text(str(int(angle_l_arm)), l_el, (255, 255, 0))
-
-            # Углы ног
+                        # Углы ног
             r_hip, r_knee, r_ankle = get_px(landmarks[24]), get_px(landmarks[26]), get_px(landmarks[28])
             angle_r_leg = calculate_angle(r_hip, r_knee, r_ankle)
             draw_text(str(int(angle_r_leg)), r_knee, (0, 255, 255))
@@ -77,27 +73,52 @@ with PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
             angle_l_leg = calculate_angle(l_hip, l_knee, l_ankle)
             draw_text(str(int(angle_l_leg)), l_knee, (0, 255, 255))
 
-            if current_exercise == "SQUATS":
-                # Берем среднее значение углов коленей
-                avg_knee_angle = (angle_r_leg + angle_l_leg) / 2
+            avg_knee_angle = (angle_r_leg + angle_l_leg) / 2
+
+            # Берем координаты плеча и бедра
+            r_shoulder = get_px(landmarks[12])
+            r_hip_pt = get_px(landmarks[24])
+            
+            # В MediaPipe ось Y идет ВНИЗ. 
+            # Разница по X покажет, насколько плечо ушло вперед относительно бедра
+            shoulder_x_diff = abs(r_shoulder[0] - r_hip_pt[0])
+            
+            # Если плечо ушло вперед больше чем на 15% от ширины кадра, значит спина наклонена
+            # (Подберите коэффициент 0.15, если срабатывает ложно)
+            is_back_bent = shoulder_x_diff > 0.15
+
+            # --- КАЛИБРОВКА ---
+            if not is_calibrated:
+                if calibration_frames < 30:
+                    calibration_frames += 1
+                    cv2.putText(frame, "КАЛИБРОВКА... Встаньте ровно!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                else:
+                    standing_angle = avg_knee_angle
+                    is_calibrated = True
+
+            if current_exercise == "SQUATS" and is_calibrated:
                 
-                if avg_knee_angle < 100:
+                # 1. Проверка глубины
+                if 100 < avg_knee_angle < 140 and squat_stage == "up":
+                     errors.append("Сядьте глубже")
+
+                # 2. Проверка спины (Теперь проверяем по наклону, а не по углу)
+                if is_back_bent:
+                    errors.append("Спину ровнее")
+
+                # 3. Проверка коленей (упрощенная)
+                knee_forward = r_knee[0] - r_ankle[0] > 0.1
+                if knee_forward and avg_knee_angle < 120:
+                    errors.append("Колени не выходят за носки")
+
+                # Логика подсчета
+                if avg_knee_angle < SQUAT_DOWN_THRESHOLD:
                     squat_stage = "down"
-                if avg_knee_angle > 160 and squat_stage == "down":
+                
+                if avg_knee_angle > (standing_angle - 10) and squat_stage == "down":
                     squat_stage = "up"
                     squat_counter += 1
                     print(f"Приседание: {squat_counter}")
-
-            elif current_exercise == "PUSHUPS":
-                # Берем среднее значение углов локтей
-                avg_elbow_angle = (angle_r_arm + angle_l_arm) / 2
-                
-                if avg_elbow_angle < 90:
-                    pushup_stage = "down"
-                if avg_elbow_angle > 160 and pushup_stage == "down":
-                    pushup_stage = "up"
-                    pushup_counter += 1
-                    print(f"Отжимание: {pushup_counter}")
 
             # Отрисовка скелета
             for landmark in landmarks:
@@ -111,7 +132,7 @@ with PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
                 end_point = (int(landmarks[connection.end].x * frame.shape[1]), int(landmarks[connection.end].y * frame.shape[0]))
                 cv2.line(frame, start_point, end_point, (255, 0, 255), 2)
 
-        # --- РУКИ (Медиапайп) ---
+        # --- РУКИ ---
         hand_result = hand_landmarker.detect_for_video(mp_image, frame_timestamp_ms)
         if hand_result.hand_landmarks:
             for hand_landmarks in hand_result.hand_landmarks:
@@ -120,25 +141,22 @@ with PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
                     y = int(landmark.y * frame.shape[0])
                     cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
 
-
-        # Черный фон для текста
-        cv2.rectangle(frame, (0, 0), (350, 100), (0, 0, 0), -1)
+ 
+        cv2.rectangle(frame, (0, 0), (400, 120), (0, 0, 0), -1)
         
         if current_exercise == "SQUATS":
-            cv2.putText(frame, "Упражнение: ПРИСЕДАНИЯ", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(frame, f"Счет: {squat_counter}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+            cv2.putText(frame, f"Приседания: {squat_counter}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
             stage_text = "Присел" if squat_stage == "down" else "Встал"
             stage_color = (0, 0, 255) if squat_stage == "down" else (0, 255, 0)
-        else:
-            cv2.putText(frame, "Упражнение: ОТЖИМАНИЯ", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(frame, f"Счет: {pushup_counter}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
-            stage_text = "Внизу" if pushup_stage == "down" else "Вверху"
-            stage_color = (0, 0, 255) if pushup_stage == "down" else (0, 255, 0)
-            
-        cv2.putText(frame, stage_text, (200, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, stage_color, 2)
+            cv2.putText(frame, stage_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, stage_color, 2)
 
-        # Подсказка внизу экрана
-        cv2.putText(frame, "Нажмите '1' для Приседаний, '2' для Отжиманий, 'q' для выхода", (10, frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # ВЫВОД ОШИБОК (Красным цветом)
+        if errors:
+            # Берем первую ошибку из списка для отображения
+            error_text = errors[0] 
+            cv2.putText(frame, error_text, (10, frame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+
+        cv2.putText(frame, "1-Приседания | 2-Отжимания | q-Выход", (10, frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         cv2.imshow('CoolCoach - Тренировка', frame)
 
@@ -147,6 +165,9 @@ with PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
             break
         elif key == ord('1'):
             current_exercise = "SQUATS"
+            is_calibrated = False
+            calibration_frames = 0
+            squat_counter = 0
         elif key == ord('2'):
             current_exercise = "PUSHUPS"
 
