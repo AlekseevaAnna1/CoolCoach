@@ -24,23 +24,19 @@ class Squat(BaseExercise):
         self.min_hip_y = 0
         self.wrong_depth_start_time = None
         self.low_angle_reached = False
+        # Флаг, чтобы не считать одну и ту же ошибку 30 раз в секунду
+        self.error_just_counted = False 
 
     def process(self, landmarks):
-        # Точки
         r_hip, r_knee, r_ankle = [landmarks[24].x, landmarks[24].y], [landmarks[26].x, landmarks[26].y], [landmarks[28].x, landmarks[28].y]
         l_hip, l_knee, l_ankle = [landmarks[23].x, landmarks[23].y], [landmarks[25].x, landmarks[25].y], [landmarks[27].x, landmarks[27].y]
-        r_sh, l_sh = [landmarks[12].x, landmarks[12].y], [landmarks[11].x, landmarks[11].y]
-        nose = [landmarks[0].x, landmarks[0].y]
+        r_sh = [landmarks[12].x, landmarks[12].y]
+        r_ear = [landmarks[8].x, landmarks[8].y]
 
-        # Углы
-        angle_r = calculate_angle(r_hip, r_knee, r_ankle)
-        angle_l = calculate_angle(l_hip, l_knee, l_ankle)
-        avg_angle = (angle_r + angle_l) / 2
-        
-        # Угол спины (плечо-бедро-колено)
-        back_angle = calculate_angle(r_sh, r_hip, r_knee)
+        knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
+        back_angle = calculate_angle(r_ear, r_sh, r_hip)
 
-        avg_hip_y = (r_hip[1] + l_hip[1]) / 2
+        avg_hip_y = r_hip[1]
         self.current_errors = []
         current_time = time.time()
 
@@ -49,51 +45,72 @@ class Squat(BaseExercise):
                 self.calibration_frames += 1
                 self.current_errors.append("КАЛИБРОВКА... Встаньте ровно!")
             else:
-                self.standing_angle = avg_angle
+                self.standing_angle = knee_angle
                 self.start_hip_y = avg_hip_y
                 self.min_hip_y = avg_hip_y
                 self.is_calibrated = True
-            return avg_angle
+            return knee_angle
 
         # Логика движения
         if avg_hip_y > self.min_hip_y:
             self.min_hip_y = avg_hip_y
 
-        if avg_angle < 150 and self.stage == "up":
+        if knee_angle < 150 and self.stage == "up":
             self.stage = "going_down"
             self.wrong_depth_start_time = None
             self.low_angle_reached = False
+            self.error_just_counted = False # Сбрасываем флаг при новом движении
 
-        if avg_angle < 100:
+        if knee_angle < 100:
             self.low_angle_reached = True
 
-        if avg_angle > 160 and self.stage in ["down", "going_down"]:
+        if knee_angle > 160 and self.stage in ["down", "going_down"]:
             self.stage = "up"
-            self.counter += 1
-            if not self.low_angle_reached:
+            
+            if self.low_angle_reached:
+                self.counter += 1
+            else:
+                # Ошибка: недосел. Считаем её ОДИН раз за это повторение.
                 self.current_errors.append("Сядьте глубже")
+                if not self.error_just_counted:
+                    self.errors += 1
+                    self.error_just_counted = True
+                
             self.min_hip_y = avg_hip_y
 
-        # Проверка ошибок ОСАНКИ (только когда мы в движении или внизу)
+        # --- ОШИБКИ В ПРОЦЕССЕ ---
+        # Если ошибка возникла в процессе (например, колено ушло), считаем её 1 раз
+        error_happened = False
+        
         if self.stage in ["going_down", "down"]:
-            # Спина
             if back_angle < 130:
                 self.current_errors.append("Держите спину ровнее")
-            # Голова (если нос уходит слишком далеко вперед от плеч)
-            if abs(nose[0] - r_sh[0]) > 0.15:
-                self.current_errors.append("Смотрите прямо перед собой")
+                error_happened = True
+            if r_knee[0] > r_ankle[0] + 0.05:
+                self.current_errors.append("Колено вперед носка")
+                error_happened = True
 
         # Зависание
-        if 100 < avg_angle < 140 and self.stage in ["going_down", "down"]:
+        if 100 < knee_angle < 140 and self.stage in ["going_down", "down"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Сядьте глубже" not in self.current_errors:
                     self.current_errors.append("Сядьте глубже")
+                error_happened = True
         else:
             self.wrong_depth_start_time = None
 
-        return avg_angle
+        # Увеличиваем счетчик, если ошибка в процессе возникла впервые (а не каждый кадр)
+        if error_happened and not self.error_just_counted:
+            self.errors += 1
+            self.error_just_counted = True
+        
+        # Если ошибок нет в текущем кадре (мы исправились), разрешаем считать следующую
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
+
+        return knee_angle
 
 
 class PushUp(BaseExercise):
