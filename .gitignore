@@ -15,6 +15,14 @@ build/
 .vite/
 .next/
 
+# Expo
+.expo/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+/ios
+/android
+
 # IDE / OS
 .idea/
 .vscode/
@@ -34,3 +42,6 @@ wandb/
 *.log
 .tmp/
 temp/
+
+# Local API specification — never commit
+json-to-yaml.yaml
