@@ -39,3 +39,5 @@ def get_feedback(exercise_name, error_text):
     except Exception as e:
         print(f"\n[!] Ошибка LLM (KodikRouter): {e}")
         return error_text # Если API упал, возвращаем сырой текст ошибки
+
+   

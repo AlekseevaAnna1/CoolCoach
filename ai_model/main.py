@@ -4,6 +4,7 @@ import urllib.request
 import os
 import time
 import numpy as np
+import uuid # Для генерации session_id
 
 from exercises import (
     Squat, PushUp, Lunge, GluteBridge,
@@ -72,6 +73,9 @@ if selected is None:
 _, ex_name, ExerciseClass = selected
 exercise = ExerciseClass()
 
+# Генерируем ID сессии для БД
+session_id = str(uuid.uuid4()) 
+
 # ==========================================
 # 3. НАСТРОЙКА
 # ==========================================
@@ -86,6 +90,7 @@ last_speak_time = 0
 workout_started = False
 start_time = 0
 countdown_duration = 3
+training_start_time = 0  # НОВОЕ: время старта самой тренировки
 
 with PoseLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -123,6 +128,7 @@ with PoseLandmarker.create_from_options(options) as landmarker:
                 cv2.putText(frame, "Приготовьтесь", (w // 2 - 100, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             else:
                 workout_started = True
+                training_start_time = time.time() # Засекаем время начала упражнений
 
         # ==========================================
         # ОСНОВНАЯ ЛОГИКА
@@ -150,8 +156,11 @@ with PoseLandmarker.create_from_options(options) as landmarker:
                 smoothed_landmarks[i] = (new_x, new_y)
                 smoothed_list[i] = SmoothLandmark(new_x, new_y)
 
-            # Передаем в логику
-            angle = exercise.process(smoothed_list)
+            # Считаем время с начала тренировки
+            current_workout_time = time.time() - training_start_time
+            
+            # Передаем landmarks и время в логику
+            angle = exercise.process(smoothed_list, current_workout_time)
 
             # Отрисовка скелета
             def draw_line(idx1, idx2):
@@ -230,7 +239,30 @@ with PoseLandmarker.create_from_options(options) as landmarker:
 cap.release()
 cv2.destroyAllWindows()
 
+# ==========================================
+# 4. ФОРМИРОВАНИЕ ДАННЫХ ДЛЯ БД
+# ==========================================
 print("\n--- ТРЕНИРОВКА ЗАВЕРШЕНА ---")
 print(f"Упражнение: {ex_name}")
 print(f"Повторений / секунд: {exercise.counter}")
-print(f"Зафиксировано ошибок: {exercise.errors}")
+print(f"Всего зафиксировано ошибок: {exercise.errors}")
+
+errors_for_db = []
+for error_type, stats in exercise.error_stats.items():
+    record = {
+        "session_id": session_id,
+        "error_type": error_type,
+        "error_count": stats["count"],
+        "first_occurred_sec": stats["first_sec"]
+    }
+    errors_for_db.append(record)
+
+print("\nДанные для отправки в БД (таблица ошибок):")
+if not errors_for_db:
+    print("Ошибок не зафиксировано.")
+else:
+    for record in errors_for_db:
+        print(record)
+
+# в будущем функция сохранения errors_for_db в вашу БД
+# Например: db.save_errors(errors_for_db)

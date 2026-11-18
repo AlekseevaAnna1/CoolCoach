@@ -8,11 +8,28 @@ class BaseExercise:
         self.errors = 0
         self.current_errors = []
         
+        # НОВОЕ: Словарь для статистики ошибок для БД
+        # Формат: { "error_type": {"count": 1, "first_sec": 12.5} }
+        self.error_stats = {}
+        
     def reset(self):
         self.counter = 0
         self.stage = "up"
         self.errors = 0
         self.current_errors = []
+        self.error_stats = {}
+
+    # НОВЫЙ МЕТОД: Централизованная запись ошибки
+    def log_error(self, error_type, workout_time):
+        self.errors += 1
+        if error_type not in self.error_stats:
+            self.error_stats[error_type] = {
+                "count": 1,
+                "first_sec": round(workout_time, 1)
+            }
+        else:
+            self.error_stats[error_type]["count"] += 1
+
 
 class Squat(BaseExercise):
     def __init__(self):
@@ -24,10 +41,9 @@ class Squat(BaseExercise):
         self.min_hip_y = 0
         self.wrong_depth_start_time = None
         self.low_angle_reached = False
-        # Флаг, чтобы не считать одну и ту же ошибку 30 раз в секунду
         self.error_just_counted = False 
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_hip, r_knee, r_ankle = [landmarks[24].x, landmarks[24].y], [landmarks[26].x, landmarks[26].y], [landmarks[28].x, landmarks[28].y]
         l_hip, l_knee, l_ankle = [landmarks[23].x, landmarks[23].y], [landmarks[25].x, landmarks[25].y], [landmarks[27].x, landmarks[27].y]
         r_sh = [landmarks[12].x, landmarks[12].y]
@@ -51,7 +67,6 @@ class Squat(BaseExercise):
                 self.is_calibrated = True
             return knee_angle
 
-        # Логика движения
         if avg_hip_y > self.min_hip_y:
             self.min_hip_y = avg_hip_y
 
@@ -59,7 +74,7 @@ class Squat(BaseExercise):
             self.stage = "going_down"
             self.wrong_depth_start_time = None
             self.low_angle_reached = False
-            self.error_just_counted = False # Сбрасываем флаг при новом движении
+            self.error_just_counted = False 
 
         if knee_angle < 100:
             self.low_angle_reached = True
@@ -70,43 +85,42 @@ class Squat(BaseExercise):
             if self.low_angle_reached:
                 self.counter += 1
             else:
-                # Ошибка: недосел. Считаем её ОДИН раз за это повторение.
                 self.current_errors.append("Сядьте глубже")
                 if not self.error_just_counted:
-                    self.errors += 1
+                    self.log_error("squat_not_deep_enough", workout_time)
                     self.error_just_counted = True
                 
             self.min_hip_y = avg_hip_y
 
-        # --- ОШИБКИ В ПРОЦЕССЕ ---
-        # Если ошибка возникла в процессе (например, колено ушло), считаем её 1 раз
         error_happened = False
         
         if self.stage in ["going_down", "down"]:
             if back_angle < 130:
                 self.current_errors.append("Держите спину ровнее")
-                error_happened = True
+                if not self.error_just_counted:
+                    self.log_error("back_rounded", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
             if r_knee[0] > r_ankle[0] + 0.05:
                 self.current_errors.append("Колено вперед носка")
-                error_happened = True
+                if not self.error_just_counted:
+                    self.log_error("knee_over_toe", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
 
-        # Зависание
         if 100 < knee_angle < 140 and self.stage in ["going_down", "down"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Сядьте глубже" not in self.current_errors:
                     self.current_errors.append("Сядьте глубже")
-                error_happened = True
+                    if not self.error_just_counted:
+                        self.log_error("squat_stuck_high", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
 
-        # Увеличиваем счетчик, если ошибка в процессе возникла впервые (а не каждый кадр)
-        if error_happened and not self.error_just_counted:
-            self.errors += 1
-            self.error_just_counted = True
-        
-        # Если ошибок нет в текущем кадре (мы исправились), разрешаем считать следующую
         if not self.current_errors and not error_happened:
             self.error_just_counted = False
 
@@ -118,8 +132,9 @@ class PushUp(BaseExercise):
         super().__init__()
         self.wrong_depth_start_time = None
         self.low_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh, r_el, r_wr = [landmarks[12].x, landmarks[12].y], [landmarks[14].x, landmarks[14].y], [landmarks[16].x, landmarks[16].y]
         l_sh, l_el, l_wr = [landmarks[11].x, landmarks[11].y], [landmarks[13].x, landmarks[13].y], [landmarks[15].x, landmarks[15].y]
         r_hip, l_hip = [landmarks[24].x, landmarks[24].y], [landmarks[23].x, landmarks[23].y]
@@ -128,18 +143,16 @@ class PushUp(BaseExercise):
         angle_r = calculate_angle(r_sh, r_el, r_wr)
         angle_l = calculate_angle(l_sh, l_el, l_wr)
         avg_angle = (angle_r + angle_l) / 2
-        
-        # Угол тела (плечо-бедро-колено) для проверки провисания таза
         back_angle = calculate_angle(r_sh, r_hip, [landmarks[26].x, landmarks[26].y])
 
         self.current_errors = []
         current_time = time.time()
 
-        # Логика движения
         if avg_angle < 150 and self.stage == "up":
             self.stage = "going_down"
             self.wrong_depth_start_time = None
             self.low_angle_reached = False
+            self.error_just_counted = False
 
         if avg_angle < 95:
             self.low_angle_reached = True
@@ -149,26 +162,41 @@ class PushUp(BaseExercise):
             self.counter += 1
             if not self.low_angle_reached:
                 self.current_errors.append("Опуститесь ниже")
+                if not self.error_just_counted:
+                    self.log_error("pushup_not_deep_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
-        # Проверка ошибок ОСАНКИ
+        error_happened = False
         if self.stage in ["going_down", "down"]:
-            # Провисание таза (угол тела прямой или выгнут)
             if back_angle > 190 or back_angle < 160:
                  self.current_errors.append("Держите тело прямым")
-            # Голова слишком низко (нос близко к рукам)
+                 if not self.error_just_counted:
+                     self.log_error("body_not_straight", workout_time)
+                     self.error_just_counted = True
+                     error_happened = True
             if nose[1] > r_sh[1] + 0.05:
                 self.current_errors.append("Поднимите голову")
+                if not self.error_just_counted:
+                    self.log_error("head_down", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
 
-        # Зависание
         if 95 < avg_angle < 130 and self.stage in ["going_down", "down"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Опуститесь ниже" not in self.current_errors:
                     self.current_errors.append("Опуститесь ниже")
+                    if not self.error_just_counted:
+                        self.log_error("pushup_stuck_high", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
@@ -178,8 +206,9 @@ class Lunge(BaseExercise):
         super().__init__()
         self.wrong_depth_start_time = None
         self.low_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_hip, r_knee, r_ankle = [landmarks[24].x, landmarks[24].y], [landmarks[26].x, landmarks[26].y], [landmarks[28].x, landmarks[28].y]
         l_hip, l_knee, l_ankle = [landmarks[23].x, landmarks[23].y], [landmarks[25].x, landmarks[25].y], [landmarks[27].x, landmarks[27].y]
         r_sh = [landmarks[12].x, landmarks[12].y]
@@ -187,18 +216,16 @@ class Lunge(BaseExercise):
         angle_r = calculate_angle(r_hip, r_knee, r_ankle)
         angle_l = calculate_angle(l_hip, l_knee, l_ankle)
         bent_leg_angle = min(angle_r, angle_l)
-        
-        # Угол наклона корпуса
         torso_angle = calculate_angle(r_sh, r_hip, r_knee)
 
         self.current_errors = []
         current_time = time.time()
 
-        # Логика движения
         if bent_leg_angle < 160 and self.stage == "up":
             self.stage = "going_down"
             self.wrong_depth_start_time = None
             self.low_angle_reached = False
+            self.error_just_counted = False
 
         if bent_leg_angle < 105:
             self.low_angle_reached = True
@@ -208,22 +235,35 @@ class Lunge(BaseExercise):
             self.counter += 1
             if not self.low_angle_reached:
                 self.current_errors.append("Согните колено глубже")
+                if not self.error_just_counted:
+                    self.log_error("lunge_not_deep_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
-        # Проверка ошибок ОСАНКИ (наклон корпуса)
+        error_happened = False
         if self.stage in ["going_down", "down"]:
             if torso_angle < 140:
                 self.current_errors.append("Выпрямите спину")
+                if not self.error_just_counted:
+                    self.log_error("torso_not_straight", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
 
-        # Зависание
         if 105 < bent_leg_angle < 140 and self.stage in ["going_down", "down"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Опуститесь ниже" not in self.current_errors:
                     self.current_errors.append("Опуститесь ниже")
+                    if not self.error_just_counted:
+                        self.log_error("lunge_stuck_high", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return bent_leg_angle
 
@@ -233,8 +273,9 @@ class GluteBridge(BaseExercise):
         super().__init__()
         self.wrong_depth_start_time = None
         self.high_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh, r_hip, r_knee = [landmarks[12].x, landmarks[12].y], [landmarks[24].x, landmarks[24].y], [landmarks[26].x, landmarks[26].y]
         l_sh, l_hip, l_knee = [landmarks[11].x, landmarks[11].y], [landmarks[23].x, landmarks[23].y], [landmarks[25].x, landmarks[25].y]
         nose = [landmarks[0].x, landmarks[0].y]
@@ -246,11 +287,11 @@ class GluteBridge(BaseExercise):
         self.current_errors = []
         current_time = time.time()
 
-        # Логика движения
         if avg_angle > 120 and self.stage == "down":
             self.stage = "going_up"
             self.wrong_depth_start_time = None
             self.high_angle_reached = False
+            self.error_just_counted = False
 
         if avg_angle > 160:
             self.high_angle_reached = True
@@ -260,38 +301,47 @@ class GluteBridge(BaseExercise):
             self.counter += 1
             if not self.high_angle_reached:
                 self.current_errors.append("Поднимите таз выше")
+                if not self.error_just_counted:
+                    self.log_error("bridge_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
-        # Проверка ошибок ОСАНКИ
+        error_happened = False
         if self.stage in ["going_up", "up"]:
-            # Голова не должна быть запрокинута назад
             if nose[1] < r_sh[1] - 0.1:
                 self.current_errors.append("Не запрокидывайте голову")
+                if not self.error_just_counted:
+                    self.log_error("head_back", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
 
-        # Зависание
         if 130 < avg_angle < 155 and self.stage in ["going_up", "up"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Поднимите таз выше" not in self.current_errors:
                     self.current_errors.append("Поднимите таз выше")
+                    if not self.error_just_counted:
+                        self.log_error("bridge_stuck_mid", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
 
-        return avg_angle
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
-    import time
-from utils import calculate_angle
+        return avg_angle
 
 
 class Crunch(BaseExercise):
-    """Пресс — подъёмы корпуса лёжа."""
     def __init__(self):
         super().__init__()
         self.wrong_depth_start_time = None
         self.high_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_knee = [landmarks[26].x, landmarks[26].y]
@@ -306,11 +356,11 @@ class Crunch(BaseExercise):
         self.current_errors = []
         current_time = time.time()
 
-        # Лёжа — угол маленький (~90-120), поднялись — больше (~140+)
         if avg_angle > 130 and self.stage == "down":
             self.stage = "going_up"
             self.wrong_depth_start_time = None
             self.high_angle_reached = False
+            self.error_just_counted = False
 
         if avg_angle > 145:
             self.high_angle_reached = True
@@ -320,30 +370,40 @@ class Crunch(BaseExercise):
             self.counter += 1
             if not self.high_angle_reached:
                 self.current_errors.append("Поднимите корпус выше")
+                if not self.error_just_counted:
+                    self.log_error("crunch_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
-        # Зависание в середине
+        error_happened = False
         if 125 < avg_angle < 140 and self.stage in ["going_up", "up"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Поднимите корпус выше" not in self.current_errors:
                     self.current_errors.append("Поднимите корпус выше")
+                    if not self.error_just_counted:
+                        self.log_error("crunch_stuck_mid", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
 
 class Plank(BaseExercise):
-    """Планка — удержание, счётчик = секунды."""
     def __init__(self):
         super().__init__()
         self.hold_start_time = None
         self.hold_seconds = 0
         self.was_in_position = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_ankle = [landmarks[28].x, landmarks[28].y]
@@ -367,33 +427,40 @@ class Plank(BaseExercise):
             self.hold_seconds = current_time - self.hold_start_time
             self.counter = int(self.hold_seconds)
             self.was_in_position = True
+            self.error_just_counted = False
         else:
             self.hold_start_time = None
-            if self.was_in_position and avg_angle <= 160:
-                self.current_errors.append("Держите тело прямым")
-                self.errors += 1
-                self.was_in_position = False
-            elif self.was_in_position and avg_angle >= 195:
-                self.current_errors.append("Опустите таз")
-                self.errors += 1
+            if self.was_in_position:
+                if avg_angle <= 160:
+                    self.current_errors.append("Держите тело прямым")
+                    self.log_error("plank_hips_sagging", workout_time)
+                elif avg_angle >= 195:
+                    self.current_errors.append("Опустите таз")
+                    self.log_error("plank_hips_too_high", workout_time)
                 self.was_in_position = False
 
-        # Голова вниз
+        error_happened = False
         if nose[1] > r_sh[1] + 0.05:
             self.current_errors.append("Поднимите голову")
+            if not self.error_just_counted:
+                self.log_error("head_down", workout_time)
+                self.error_just_counted = True
+                error_happened = True
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
 
 class SidePlank(BaseExercise):
-    """Боковая планка — удержание, счётчик = секунды."""
     def __init__(self):
         super().__init__()
         self.hold_start_time = None
         self.was_in_position = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
-        # Берём ту сторону, что видна лучше (по средней линии плеч/бёдер)
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_ankle = [landmarks[28].x, landmarks[28].y]
@@ -415,28 +482,36 @@ class SidePlank(BaseExercise):
                 self.hold_start_time = current_time
             self.counter = int(current_time - self.hold_start_time)
             self.was_in_position = True
+            self.error_just_counted = False
         else:
             self.hold_start_time = None
             if self.was_in_position:
                 self.current_errors.append("Держите тело прямым")
-                self.errors += 1
+                self.log_error("sideplank_hips_sagging", workout_time)
                 self.was_in_position = False
 
-        # Проверка провисания таза (угол слишком маленький)
-        if avg_angle < 150 and in_position is False:
+        error_happened = False
+        if avg_angle < 150 and not in_position:
             self.current_errors.append("Поднимите таз")
+            if not self.error_just_counted:
+                self.log_error("sideplank_hips_sagging", workout_time)
+                self.error_just_counted = True
+                error_happened = True
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
 
 class ReverseLunge(BaseExercise):
-    """Обратные выпады — как Lunge, но логика та же."""
     def __init__(self):
         super().__init__()
         self.wrong_depth_start_time = None
         self.low_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_knee = [landmarks[26].x, landmarks[26].y]
         r_ankle = [landmarks[28].x, landmarks[28].y]
@@ -457,6 +532,7 @@ class ReverseLunge(BaseExercise):
             self.stage = "going_down"
             self.wrong_depth_start_time = None
             self.low_angle_reached = False
+            self.error_just_counted = False
 
         if bent_leg_angle < 105:
             self.low_angle_reached = True
@@ -466,11 +542,19 @@ class ReverseLunge(BaseExercise):
             self.counter += 1
             if not self.low_angle_reached:
                 self.current_errors.append("Согните колено глубже")
+                if not self.error_just_counted:
+                    self.log_error("revlunge_not_deep_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
+        error_happened = False
         if self.stage in ["going_down", "down"]:
             if torso_angle < 140:
                 self.current_errors.append("Выпрямите спину")
+                if not self.error_just_counted:
+                    self.log_error("torso_not_straight", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
 
         if 105 < bent_leg_angle < 140 and self.stage in ["going_down", "down"]:
             if self.wrong_depth_start_time is None:
@@ -478,22 +562,29 @@ class ReverseLunge(BaseExercise):
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Опуститесь ниже" not in self.current_errors:
                     self.current_errors.append("Опуститесь ниже")
+                    if not self.error_just_counted:
+                        self.log_error("revlunge_stuck_high", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return bent_leg_angle
 
 
 class CalfRaise(BaseExercise):
-    """Подъёмы на носки — считаем по вертикальному смещению стопы/бедра."""
     def __init__(self):
         super().__init__()
         self.min_ankle_y = None
         self.max_ankle_y = None
         self.low_reached = False
         self.high_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_ankle = [landmarks[28].x, landmarks[28].y]
         l_ankle = [landmarks[27].x, landmarks[27].y]
         avg_ankle_y = (r_ankle[1] + l_ankle[1]) / 2
@@ -505,7 +596,6 @@ class CalfRaise(BaseExercise):
             self.min_ankle_y = avg_ankle_y
             return 0
 
-        # Обновляем границы
         if avg_ankle_y > self.max_ankle_y:
             self.max_ankle_y = avg_ankle_y
         if avg_ankle_y < self.min_ankle_y:
@@ -516,6 +606,7 @@ class CalfRaise(BaseExercise):
         if self.stage == "down" and avg_ankle_y < self.max_ankle_y - 0.02:
             self.stage = "going_up"
             self.high_reached = False
+            self.error_just_counted = False
 
         if avg_ankle_y < self.max_ankle_y - 0.04:
             self.high_reached = True
@@ -525,22 +616,26 @@ class CalfRaise(BaseExercise):
             self.counter += 1
             if not self.high_reached:
                 self.current_errors.append("Поднимитесь выше")
+                if not self.error_just_counted:
+                    self.log_error("calfraise_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.high_reached = False
 
         if self.stage == "up":
             self.stage = "down"
+            self.error_just_counted = False
 
         return delta
 
 
 class LateralRaise(BaseExercise):
-    """Разведение гантелей в стороны (плечи)."""
     def __init__(self):
         super().__init__()
         self.wrong_depth_start_time = None
         self.high_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_el = [landmarks[14].x, landmarks[14].y]
         r_wr = [landmarks[16].x, landmarks[16].y]
@@ -548,12 +643,10 @@ class LateralRaise(BaseExercise):
         l_el = [landmarks[13].x, landmarks[13].y]
         l_wr = [landmarks[15].x, landmarks[15].y]
 
-        # Угол плечо-локоть-запястье (рука прямая ~180)
         angle_r = calculate_angle(r_sh, r_el, r_wr)
         angle_l = calculate_angle(l_sh, l_el, l_wr)
         avg_angle = (angle_r + angle_l) / 2
 
-        # Высота запястья относительно плеча — подняли руки или нет
         wrist_above_shoulder_r = r_wr[1] < r_sh[1] - 0.03
         wrist_above_shoulder_l = l_wr[1] < l_sh[1] - 0.03
         arms_up = wrist_above_shoulder_r and wrist_above_shoulder_l
@@ -561,48 +654,60 @@ class LateralRaise(BaseExercise):
         self.current_errors = []
         current_time = time.time()
 
-        # Руки внизу -> пошли вверх
         if arms_up and self.stage == "down":
             self.stage = "going_up"
             self.wrong_depth_start_time = None
             self.high_angle_reached = False
+            self.error_just_counted = False
 
         if arms_up:
             self.high_angle_reached = True
 
-        # Руки вернулись вниз -> повторение
         if not arms_up and self.stage in ["up", "going_up"]:
             self.stage = "down"
             self.counter += 1
             if not self.high_angle_reached:
                 self.current_errors.append("Поднимите руки до уровня плеч")
+                if not self.error_just_counted:
+                    self.log_error("lateralraise_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
-        # Руки должны быть прямыми
+        error_happened = False
         if avg_angle < 150:
             self.current_errors.append("Не сгибайте руки")
+            if not self.error_just_counted:
+                self.log_error("arms_bent", workout_time)
+                self.error_just_counted = True
+                error_happened = True
 
-        # Зависание в середине
         if 100 < avg_angle < 150 and self.stage in ["going_up", "up"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Поднимите руки до уровня плеч" not in self.current_errors:
                     self.current_errors.append("Поднимите руки до уровня плеч")
+                    if not self.error_just_counted:
+                        self.log_error("lateralraise_stuck_mid", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
 
 class LegRaise(BaseExercise):
-    """Подъёмы ног лёжа."""
     def __init__(self):
         super().__init__()
         self.wrong_depth_start_time = None
         self.high_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_ankle = [landmarks[28].x, landmarks[28].y]
@@ -617,11 +722,11 @@ class LegRaise(BaseExercise):
         self.current_errors = []
         current_time = time.time()
 
-        # Ноги внизу — угол ~90-110, подняли — ~160+
         if avg_angle > 130 and self.stage == "down":
             self.stage = "going_up"
             self.wrong_depth_start_time = None
             self.high_angle_reached = False
+            self.error_just_counted = False
 
         if avg_angle > 150:
             self.high_angle_reached = True
@@ -631,16 +736,27 @@ class LegRaise(BaseExercise):
             self.counter += 1
             if not self.high_angle_reached:
                 self.current_errors.append("Поднимите ноги выше")
+                if not self.error_just_counted:
+                    self.log_error("legraise_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
+        error_happened = False
         if 120 < avg_angle < 145 and self.stage in ["going_up", "up"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Поднимите ноги выше" not in self.current_errors:
                     self.current_errors.append("Поднимите ноги выше")
+                    if not self.error_just_counted:
+                        self.log_error("legraise_stuck_mid", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
@@ -650,8 +766,9 @@ class MountainClimber(BaseExercise):
     def __init__(self):
         super().__init__()
         self.prev_knee_up = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_knee = [landmarks[26].x, landmarks[26].y]
         r_ankle = [landmarks[28].x, landmarks[28].y]
@@ -670,12 +787,21 @@ class MountainClimber(BaseExercise):
 
         if knee_up and not self.prev_knee_up:
             self.counter += 1
+            self.error_just_counted = False # Сброс при новом движении
 
         self.prev_knee_up = knee_up
 
+        error_happened = False
         # Проверка: таз не должен задираться
         if r_hip[1] < r_knee[1] - 0.05:
             self.current_errors.append("Опустите таз")
+            if not self.error_just_counted:
+                self.log_error("hips_too_high", workout_time)
+                self.error_just_counted = True
+                error_happened = True
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return min_angle
 
@@ -686,8 +812,9 @@ class Superman(BaseExercise):
         super().__init__()
         self.wrong_depth_start_time = None
         self.high_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_hip = [landmarks[24].x, landmarks[24].y]
         r_ankle = [landmarks[28].x, landmarks[28].y]
@@ -706,6 +833,7 @@ class Superman(BaseExercise):
             self.stage = "going_up"
             self.wrong_depth_start_time = None
             self.high_angle_reached = False
+            self.error_just_counted = False
 
         if avg_angle > 160:
             self.high_angle_reached = True
@@ -715,18 +843,30 @@ class Superman(BaseExercise):
             self.counter += 1
             if not self.high_angle_reached:
                 self.current_errors.append("Поднимите руки и ноги выше")
+                if not self.error_just_counted:
+                    self.log_error("superman_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
+        error_happened = False
         if 130 < avg_angle < 155 and self.stage in ["going_up", "up"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Поднимите руки и ноги выше" not in self.current_errors:
                     self.current_errors.append("Поднимите руки и ноги выше")
+                    if not self.error_just_counted:
+                        self.log_error("superman_stuck_mid", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
 
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
+
         return avg_angle
+
 
 class DumbbellCurl(BaseExercise):
     """Сгибание рук с гантелями (бицепс)."""
@@ -734,8 +874,9 @@ class DumbbellCurl(BaseExercise):
         super().__init__()
         self.wrong_depth_start_time = None
         self.high_angle_reached = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         r_el = [landmarks[14].x, landmarks[14].y]
         r_wr = [landmarks[16].x, landmarks[16].y]
@@ -743,7 +884,6 @@ class DumbbellCurl(BaseExercise):
         l_el = [landmarks[13].x, landmarks[13].y]
         l_wr = [landmarks[15].x, landmarks[15].y]
 
-        # Угол плечо-локоть-запястье: внизу ~160-180, вверху ~40-60
         angle_r = calculate_angle(r_sh, r_el, r_wr)
         angle_l = calculate_angle(l_sh, l_el, l_wr)
         avg_angle = (angle_r + angle_l) / 2
@@ -751,37 +891,48 @@ class DumbbellCurl(BaseExercise):
         self.current_errors = []
         current_time = time.time()
 
-        # Руки внизу -> начали сгибать
         if avg_angle < 140 and self.stage == "down":
             self.stage = "going_up"
             self.wrong_depth_start_time = None
             self.high_angle_reached = False
+            self.error_just_counted = False
 
-        # Дошли до верха
         if avg_angle < 70:
             self.high_angle_reached = True
 
-        # Вернулись вниз -> повторение
         if avg_angle > 150 and self.stage in ["up", "going_up"]:
             self.stage = "down"
             self.counter += 1
             if not self.high_angle_reached:
                 self.current_errors.append("Согните руки сильнее")
+                if not self.error_just_counted:
+                    self.log_error("curl_not_high_enough", workout_time)
+                    self.error_just_counted = True
             self.wrong_depth_start_time = None
 
-        # Локти не должны уходить вперёд/в стороны
+        error_happened = False
         if abs(r_el[0] - r_sh[0]) > 0.08:
             self.current_errors.append("Держите локти ближе к корпусу")
+            if not self.error_just_counted:
+                self.log_error("elbows_flared", workout_time)
+                self.error_just_counted = True
+                error_happened = True
 
-        # Зависание в середине
         if 70 < avg_angle < 140 and self.stage in ["going_up", "up"]:
             if self.wrong_depth_start_time is None:
                 self.wrong_depth_start_time = current_time
             elif current_time - self.wrong_depth_start_time > 1.5:
                 if "Согните руки сильнее" not in self.current_errors:
                     self.current_errors.append("Согните руки сильнее")
+                    if not self.error_just_counted:
+                        self.log_error("curl_stuck_mid", workout_time)
+                        self.error_just_counted = True
+                        error_happened = True
         else:
             self.wrong_depth_start_time = None
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return avg_angle
 
@@ -792,8 +943,9 @@ class BicycleCrunch(BaseExercise):
         super().__init__()
         self.prev_left_up = False
         self.prev_right_up = False
+        self.error_just_counted = False
 
-    def process(self, landmarks):
+    def process(self, landmarks, workout_time):
         r_sh = [landmarks[12].x, landmarks[12].y]
         l_sh = [landmarks[11].x, landmarks[11].y]
         r_hip = [landmarks[24].x, landmarks[24].y]
@@ -803,37 +955,46 @@ class BicycleCrunch(BaseExercise):
         r_ankle = [landmarks[28].x, landmarks[28].y]
         l_ankle = [landmarks[27].x, landmarks[27].y]
 
-        # Угол сгиба правого и левого колена
         angle_r = calculate_angle(r_hip, r_knee, r_ankle)
         angle_l = calculate_angle(l_hip, l_knee, l_ankle)
 
-        # Колено подтянуто к груди — угол маленький
         right_knee_up = angle_r < 100
         left_knee_up = angle_l < 100
 
         self.current_errors = []
+        error_happened = False
 
-        # Считаем каждое попеременное подтягивание (правое или левое)
         if right_knee_up and not self.prev_right_up:
             self.counter += 1
+            self.error_just_counted = False
         if left_knee_up and not self.prev_left_up:
             self.counter += 1
+            self.error_just_counted = False
 
         self.prev_right_up = right_knee_up
         self.prev_left_up = left_knee_up
 
-        # Проверка: колено должно идти к противоположному плечу
-        # (по горизонтали колено должно быть ближе к центру, а не строго вверх)
         if right_knee_up:
             dist_to_left_sh = abs(r_knee[0] - l_sh[0])
             dist_to_right_sh = abs(r_knee[0] - r_sh[0])
             if dist_to_left_sh > dist_to_right_sh:
                 self.current_errors.append("Тяните колено к противоположному локтю")
+                if not self.error_just_counted:
+                    self.log_error("wrong_side_twist", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
 
         if left_knee_up:
             dist_to_right_sh = abs(l_knee[0] - r_sh[0])
             dist_to_left_sh = abs(l_knee[0] - l_sh[0])
             if dist_to_right_sh > dist_to_left_sh:
                 self.current_errors.append("Тяните колено к противоположному локтю")
+                if not self.error_just_counted:
+                    self.log_error("wrong_side_twist", workout_time)
+                    self.error_just_counted = True
+                    error_happened = True
+
+        if not self.current_errors and not error_happened:
+            self.error_just_counted = False
 
         return min(angle_r, angle_l)
