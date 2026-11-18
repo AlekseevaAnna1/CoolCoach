@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 # Ищем файл .env в той же папке, где лежит llm_agent.py
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
-# Берем ключ из .env. Если файла .env нет, ключ будет None
 API_KEY = os.getenv("KODIK_API_KEY")
 
 client = OpenAI(

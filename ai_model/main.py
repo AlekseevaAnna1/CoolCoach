@@ -5,7 +5,12 @@ import os
 import time
 import numpy as np
 
-from exercises import Squat, PushUp, Lunge, GluteBridge
+from exercises import (
+    Squat, PushUp, Lunge, GluteBridge,
+    Crunch, Plank, SidePlank, ReverseLunge,
+    CalfRaise, LateralRaise, LegRaise,
+    MountainClimber, Superman, DumbbellCurl, BicycleCrunch
+)
 from llm_agent import get_feedback
 from tts_agent import speak
 
@@ -17,7 +22,10 @@ pose_model_path = 'ai_model/models/pose_landmarker_lite.task'
 
 if not os.path.exists(pose_model_path):
     print("Скачиваем модель...")
-    urllib.request.urlretrieve("https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", pose_model_path)
+    urllib.request.urlretrieve(
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        pose_model_path
+    )
 
 BaseOptions = mp.tasks.BaseOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
@@ -30,25 +38,39 @@ options = PoseLandmarkerOptions(
 )
 
 # ==========================================
-# 2. МЕНЮ
+# 2. МЕНЮ (15 УПРАЖНЕНИЙ)
 # ==========================================
-print("=== CoolCoach ML Module ===")
-print("1. Приседания")
-print("2. Отжимания")
-print("3. Выпады")
-print("4. Ягодичный мостик")
-choice = input("Введите номер: ")
+EXERCISES = [
+    ("1",  "Приседания",                 Squat),
+    ("2",  "Отжимания",                  PushUp),
+    ("3",  "Выпады",                     Lunge),
+    ("4",  "Ягодичный мостик",           GluteBridge),
+    ("5",  "Пресс (подъёмы корпуса)",    Crunch),
+    ("6",  "Планка",                     Plank),
+    ("7",  "Боковая планка",             SidePlank),
+    ("8",  "Обратные выпады",            ReverseLunge),
+    ("9",  "Подъёмы на носки",           CalfRaise),
+    ("10", "Разведение гантелей",        LateralRaise),
+    ("11", "Подъёмы ног лёжа",           LegRaise),
+    ("12", "«Альпинист»",                MountainClimber),
+    ("13", "«Супермен»",                 Superman),
+    ("14", "Сгибание рук с гантелями",   DumbbellCurl),
+    ("15", "Велосипед",                  BicycleCrunch),
+]
 
-if choice == '1':
-    exercise = Squat(); ex_name = "Приседания"
-elif choice == '2':
-    exercise = PushUp(); ex_name = "Отжимания"
-elif choice == '3':
-    exercise = Lunge(); ex_name = "Выпады"
-elif choice == '4':
-    exercise = GluteBridge(); ex_name = "Ягодичный мостик"
-else:
+print("=== CoolCoach ML Module ===")
+for num, name, _ in EXERCISES:
+    print(f"{num}. {name}")
+
+choice = input("Введите номер: ").strip()
+
+selected = next((item for item in EXERCISES if item[0] == choice), None)
+if selected is None:
+    print("Неверный выбор.")
     exit()
+
+_, ex_name, ExerciseClass = selected
+exercise = ExerciseClass()
 
 # ==========================================
 # 3. НАСТРОЙКА
@@ -63,7 +85,7 @@ last_speak_time = 0
 # Переменные для таймера
 workout_started = False
 start_time = 0
-countdown_duration = 3 # Секунды до старта
+countdown_duration = 3
 
 with PoseLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -77,20 +99,18 @@ with PoseLandmarker.create_from_options(options) as landmarker:
         frame_timestamp_ms = int(time.time() * 1000)
 
         result = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
-        
+
         # ==========================================
         # БЛОК ТАЙМЕРА
         # ==========================================
         if not workout_started:
             if start_time == 0:
                 start_time = time.time()
-                # Можно добавить голосовое: speak("Приготовьтесь")
-            
+
             elapsed = time.time() - start_time
             remaining = int(countdown_duration - elapsed) + 1
-            
+
             if remaining > 0:
-                # Выводим большие цифры по центру
                 h, w, _ = frame.shape
                 text = str(remaining)
                 font_scale = 5
@@ -98,34 +118,35 @@ with PoseLandmarker.create_from_options(options) as landmarker:
                 text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
                 text_x = (w - text_size[0]) // 2
                 text_y = (h + text_size[1]) // 2
-                
+
                 cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
                 cv2.putText(frame, "Приготовьтесь", (w // 2 - 100, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             else:
-                workout_started = True # Таймер закончился, включаем логику
+                workout_started = True
 
         # ==========================================
-        # ОСНОВНАЯ ЛОГИКА (Работает только после таймера)
+        # ОСНОВНАЯ ЛОГИКА
         # ==========================================
         if workout_started and result.pose_landmarks:
             raw_landmarks = result.pose_landmarks[0]
-            
+
             class SmoothLandmark:
-                def __init__(self, x, y): self.x, self.y = x, y
-            
+                def __init__(self, x, y):
+                    self.x, self.y = x, y
+
             smoothed_list = [None] * 33
 
             for i in active_points:
                 raw_x = raw_landmarks[i].x
                 raw_y = raw_landmarks[i].y
-                
+
                 if i in smoothed_landmarks:
                     prev_x, prev_y = smoothed_landmarks[i]
                     new_x = prev_x * alpha + raw_x * (1 - alpha)
                     new_y = prev_y * alpha + raw_y * (1 - alpha)
                 else:
                     new_x, new_y = raw_x, raw_y
-                
+
                 smoothed_landmarks[i] = (new_x, new_y)
                 smoothed_list[i] = SmoothLandmark(new_x, new_y)
 
@@ -143,7 +164,10 @@ with PoseLandmarker.create_from_options(options) as landmarker:
 
             def get_center(idx1, idx2):
                 if smoothed_list[idx1] and smoothed_list[idx2]:
-                    return (int((smoothed_list[idx1].x + smoothed_list[idx2].x) / 2 * frame.shape[1]), int((smoothed_list[idx1].y + smoothed_list[idx2].y) / 2 * frame.shape[0]))
+                    return (
+                        int((smoothed_list[idx1].x + smoothed_list[idx2].x) / 2 * frame.shape[1]),
+                        int((smoothed_list[idx1].y + smoothed_list[idx2].y) / 2 * frame.shape[0])
+                    )
                 return None
 
             # Руки
@@ -160,9 +184,9 @@ with PoseLandmarker.create_from_options(options) as landmarker:
             # Позвоночник и шея
             neck = get_center(11, 12)
             pelvis = get_center(23, 24)
-            
+
             if neck and pelvis:
-                cv2.line(frame, neck, pelvis, (255, 0, 255), 2) 
+                cv2.line(frame, neck, pelvis, (255, 0, 255), 2)
                 nose_x = int(smoothed_list[0].x * frame.shape[1])
                 nose_y = int(smoothed_list[0].y * frame.shape[0])
                 cv2.line(frame, neck, (nose_x, nose_y), (255, 0, 255), 2)
@@ -185,7 +209,7 @@ with PoseLandmarker.create_from_options(options) as landmarker:
                 for err in exercise.current_errors:
                     cv2.putText(frame, err, (10, frame.shape[0] - y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                     y_offset += 30
-                
+
                 current_time = time.time()
                 if current_time - last_speak_time > 2.0:
                     error_to_speak = exercise.current_errors[0]
@@ -195,8 +219,8 @@ with PoseLandmarker.create_from_options(options) as landmarker:
 
         # Интерфейс (Счетчик)
         if workout_started:
-            cv2.rectangle(frame, (0, 0), (350, 80), (0, 0, 0), -1)
-            cv2.putText(frame, f"{ex_name}: {exercise.counter}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            cv2.rectangle(frame, (0, 0), (400, 80), (0, 0, 0), -1)
+            cv2.putText(frame, f"{ex_name}: {exercise.counter}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
         cv2.imshow('CoolCoach AI', frame)
 
@@ -208,5 +232,5 @@ cv2.destroyAllWindows()
 
 print("\n--- ТРЕНИРОВКА ЗАВЕРШЕНА ---")
 print(f"Упражнение: {ex_name}")
-print(f"Повторений: {exercise.counter}")
+print(f"Повторений / секунд: {exercise.counter}")
 print(f"Зафиксировано ошибок: {exercise.errors}")
