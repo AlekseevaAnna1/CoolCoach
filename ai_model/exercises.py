@@ -204,70 +204,95 @@ class PushUp(BaseExercise):
 class Lunge(BaseExercise):
     def __init__(self):
         super().__init__()
-        self.wrong_depth_start_time = None
-        self.low_angle_reached = False
-        self.error_just_counted = False
+        self.has_started_movement = False
+        self.reached_bottom = False
+        self.attempted = False
+        self.went_up = False # Флаг, что человек начал подниматься
 
     def process(self, landmarks, workout_time):
         r_hip, r_knee, r_ankle = [landmarks[24].x, landmarks[24].y], [landmarks[26].x, landmarks[26].y], [landmarks[28].x, landmarks[28].y]
         l_hip, l_knee, l_ankle = [landmarks[23].x, landmarks[23].y], [landmarks[25].x, landmarks[25].y], [landmarks[27].x, landmarks[27].y]
         r_sh = [landmarks[12].x, landmarks[12].y]
+        l_sh = [landmarks[11].x, landmarks[11].y]
 
         angle_r = calculate_angle(r_hip, r_knee, r_ankle)
         angle_l = calculate_angle(l_hip, l_knee, l_ankle)
-        bent_leg_angle = min(angle_r, angle_l)
-        torso_angle = calculate_angle(r_sh, r_hip, r_knee)
+        
+        # Угол передней (сильно согнутой) ноги
+        front_leg_angle = min(angle_r, angle_l)
+        # Угол задней (менее согнутой) ноги
+        back_leg_angle = max(angle_r, angle_l)
+        
+        # Угол наклона корпуса
+        torso_angle = max(calculate_angle(r_sh, r_hip, r_knee), calculate_angle(l_sh, l_hip, l_knee))
 
         self.current_errors = []
-        current_time = time.time()
+        error_happened = False
 
-        if bent_leg_angle < 160 and self.stage == "up":
+        # 1. Начало движения (человек пошел вниз)
+        if front_leg_angle < 155 and self.stage == "up":
             self.stage = "going_down"
-            self.wrong_depth_start_time = None
-            self.low_angle_reached = False
+            self.has_started_movement = True
+            self.reached_bottom = False
+            self.attempted = False
+            self.went_up = False
             self.error_just_counted = False
 
-        if bent_leg_angle < 105:
-            self.low_angle_reached = True
+        # 2. Запоминаем, что была попытка присесть
+        if front_leg_angle < 135 and self.has_started_movement:
+            self.attempted = True
 
-        if bent_leg_angle > 160 and self.stage in ["down", "going_down"]:
+        # 3. Достигли нужной глубины
+        if front_leg_angle < 110:
+            self.reached_bottom = True
+
+        # 4. Человек начал подниматься (угол увеличился)
+        if self.has_started_movement and front_leg_angle > 140:
+            self.went_up = True
+
+        # 5. Полное выпрямление (возврат в исходное)
+        if front_leg_angle > 165 and self.stage == "going_down":
             self.stage = "up"
-            self.counter += 1
-            if not self.low_angle_reached:
+            
+            if self.reached_bottom:
+                self.counter += 1 # Засчитываем повторение
+            self.has_started_movement = False
+            self.reached_bottom = False
+            self.attempted = False
+            self.went_up = False
+
+        # --- ОШИБКИ ---
+        if self.has_started_movement:
+            # Ошибка: Недостаточная глубина (срабатывает, когда пошел наверх, но глубоко не сел)
+            if self.went_up and not self.reached_bottom and self.attempted:
                 self.current_errors.append("Согните колено глубже")
+                error_happened = True
                 if not self.error_just_counted:
                     self.log_error("lunge_not_deep_enough", workout_time)
                     self.error_just_counted = True
-            self.wrong_depth_start_time = None
-
-        error_happened = False
-        if self.stage in ["going_down", "down"]:
-            if torso_angle < 140:
+                    
+            # Проверка спины
+            if torso_angle < 115:
                 self.current_errors.append("Выпрямите спину")
+                error_happened = True
                 if not self.error_just_counted:
                     self.log_error("torso_not_straight", workout_time)
                     self.error_just_counted = True
-                    error_happened = True
 
-        if 105 < bent_leg_angle < 140 and self.stage in ["going_down", "down"]:
-            if self.wrong_depth_start_time is None:
-                self.wrong_depth_start_time = current_time
-            elif current_time - self.wrong_depth_start_time > 1.5:
-                if "Опуститесь ниже" not in self.current_errors:
-                    self.current_errors.append("Опуститесь ниже")
+            # Проверка задней ноги (должна сгибаться)
+            if self.reached_bottom:
+                if back_leg_angle > 150: 
+                    self.current_errors.append("Опустите заднее колено")
+                    error_happened = True
                     if not self.error_just_counted:
-                        self.log_error("lunge_stuck_high", workout_time)
+                        self.log_error("back_knee_not_bent", workout_time)
                         self.error_just_counted = True
-                        error_happened = True
-        else:
-            self.wrong_depth_start_time = None
 
         if not self.current_errors and not error_happened:
             self.error_just_counted = False
 
-        return bent_leg_angle
-
-
+        return front_leg_angle
+    
 class GluteBridge(BaseExercise):
     def __init__(self):
         super().__init__()
