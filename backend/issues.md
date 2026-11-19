@@ -7,3 +7,15 @@
 Ошибок нет. Все шаги вернули ожидаемые коды: 200, 201, 204, 409 и 202.
 
 Побочный эффект прогона: имя тестового пользователя изменено на `Agent`, созданная тренировка удалена.
+
+## 19 ноября 2026
+
+Повод: текст ошибки 404 в `request_password_reset` заменён на `No user with this email was found`. Сервер `http://127.0.0.1:8000`, пользователь `test_user@example.com`.
+
+Сценарий: вход, `GET /auth/me`, `POST /auth/password-reset` с адресом, которого нет в базе.
+
+Ошибок нет.
+
+- `POST /auth/login` — 200
+- `GET /auth/me` — 200, `user_id` 2, имя `Agent`
+- `POST /auth/password-reset` для неизвестного email — 404, `detail`: `No user with this email was found`

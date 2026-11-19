@@ -34,3 +34,4 @@ wandb/
 *.log
 .tmp/
 temp/
+.cursor/hooks/state/

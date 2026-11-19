@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "backend/venv/Scripts/python.exe .cursor/hooks/mark_api_change.py"
+      }
+    ],
+    "stop": [
+      {
+        "command": "backend/venv/Scripts/python.exe .cursor/hooks/remind_user_flow.py",
+        "loop_limit": 2
+      }
+    ]
+  }
+}

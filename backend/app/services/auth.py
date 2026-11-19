@@ -96,7 +96,7 @@ async def request_password_reset(db: AsyncSession, data: PasswordResetRequest) -
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User with this email was not found",
+            detail="No user with this email was found",
         )
     user.reset_token = secrets.token_urlsafe(32)
     user.reset_token_expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
