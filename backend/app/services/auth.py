@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import PasswordResetConfirm, PasswordResetRequest, Token, UserCreate, UserLogin, UserUpdate
+from app.services.mail import send_password_reset_email
 from app.services.security import (
     create_access_token,
     hash_password,
@@ -89,16 +90,20 @@ async def update_user(db: AsyncSession, user: User, data: UserUpdate) -> User:
     return user
 
 
-# Сохраняет токен восстановления пароля. Письмо пока не отправляется.
+# Сохраняет токен восстановления пароля и отправляет его на почту.
 async def request_password_reset(db: AsyncSession, data: PasswordResetRequest) -> None:
     user = await db.scalar(select(User).where(User.email == data.email))
     if user is None:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User with this email was not found",
+        )
     user.reset_token = secrets.token_urlsafe(32)
     user.reset_token_expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
         minutes=PASSWORD_RESET_EXPIRE_MINUTES
     )
     await db.commit()
+    await send_password_reset_email(user.email, user.reset_token)
 
 
 # Ставит новый пароль по токену из письма и очищает токен.

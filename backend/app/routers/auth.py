@@ -54,14 +54,14 @@ async def update_me(
     return UserRead.model_validate(user)
 
 
-# Запрос восстановления пароля. Ответ одинаковый, даже если email не найден.
+# Запрос восстановления пароля. Неизвестный email возвращает 404.
 @router.post("/password-reset", status_code=status.HTTP_202_ACCEPTED)
 async def password_reset(
     payload: PasswordResetRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     await request_password_reset(db, payload)
-    return {"detail": "If the email is registered, password reset instructions will be sent"}
+    return {"detail": "Password reset instructions have been sent"}
 
 
 # Установка нового пароля по токену из письма.
